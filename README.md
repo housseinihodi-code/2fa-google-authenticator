@@ -86,3 +86,4 @@ payload du JWT doit contenir l'identifiant utilisateur dans `sub`, `userId` ou `
 ```bash
 npm test
 ```
+# conecteur_2FA_DC
