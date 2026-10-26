@@ -1,0 +1,459 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<title>Module 2FA — Guide d'intégration</title>
+<style>
+  @page { size: a4; margin: 2cm 2cm 2.2cm 2cm; }
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 10.5pt; color: #1a1a1a; line-height: 1.45; }
+  h1 { font-size: 22pt; color: #14213d; margin: 0 0 4pt 0; }
+  h2 { font-size: 15pt; color: #14213d; border-bottom: 1.5pt solid #14213d; padding-bottom: 3pt; margin: 22pt 0 10pt 0; }
+  h3 { font-size: 12pt; color: #22305a; margin: 16pt 0 6pt 0; }
+  h4 { font-size: 10.5pt; color: #22305a; margin: 12pt 0 4pt 0; }
+  p { margin: 0 0 7pt 0; }
+  ul, ol { margin: 0 0 8pt 0; padding-left: 16pt; }
+  li { margin-bottom: 3pt; }
+  code { font-family: Courier, monospace; font-size: 9.5pt; background: #f0f2f6; padding: 1pt 3pt; }
+  pre { font-family: Courier, monospace; font-size: 9pt; background: #f5f6f8; border: 0.75pt solid #d5d9e0;
+        border-left: 3pt solid #14213d; padding: 7pt 9pt; margin: 6pt 0 10pt 0; }
+  table { width: 100%; border-collapse: collapse; margin: 6pt 0 12pt 0; font-size: 9.5pt; }
+  th { background: #14213d; color: #ffffff; text-align: left; padding: 5pt 6pt; }
+  td { border: 0.75pt solid #c9cfd8; padding: 4pt 6pt; vertical-align: top; }
+  tr.alt td { background: #f5f6f8; }
+  .lead { font-size: 11pt; color: #444; }
+  .tag { font-family: Courier, monospace; font-size: 9pt; }
+  .note { background: #fff8e1; border: 0.75pt solid #e8cf7a; border-left: 3pt solid #d9a400; padding: 7pt 9pt; margin: 8pt 0; }
+  .warn { background: #fdecec; border: 0.75pt solid #e6a6a6; border-left: 3pt solid #c0392b; padding: 7pt 9pt; margin: 8pt 0; }
+  .cover { margin-top: 5cm; }
+  .cover .sub { font-size: 12pt; color: #555; margin-top: 8pt; }
+  .cover .meta { margin-top: 2cm; font-size: 10pt; color: #555; }
+  .pb { page-break-before: always; }
+  .muted { color: #666; font-size: 9pt; }
+  a { color: #14213d; }
+</style>
+</head>
+<body>
+
+<div class="cover">
+  <h1>Module 2FA — Authentification à double facteur</h1>
+  <div class="sub">Guide d'intégration pour l'équipe de développement du site hôte</div>
+  <div class="sub">TOTP compatible Google Authenticator / Authy / FreeOTP — API REST Node.js autonome</div>
+  <div class="meta">
+    Version du module : 1.0.0<br/>
+    Document rédigé le : 31 août 2026<br/>
+    Format : API REST, indépendante du frontend
+  </div>
+</div>
+
+<div class="pb"></div>
+<h2>Sommaire</h2>
+<ol>
+  <li>Présentation et périmètre</li>
+  <li>Principe d'intégration</li>
+  <li>Prérequis</li>
+  <li>Installation</li>
+  <li>Configuration (fichier <span class="tag">.env</span>)</li>
+  <li>Base de données</li>
+  <li>Référence des endpoints</li>
+  <li>Parcours d'intégration côté site hôte</li>
+  <li>Sécurité — points impératifs</li>
+  <li>Codes d'erreur</li>
+  <li>Tests et outils fournis</li>
+  <li>Checklist de mise en production</li>
+  <li>Dépannage rapide</li>
+</ol>
+
+<h2>1. Présentation et périmètre</h2>
+<p class="lead">Le module ajoute une deuxième étape de connexion (code à 6 chiffres généré par une
+application d'authentification) à un site web existant, sans toucher à son système de connexion.</p>
+
+<h4>Ce que le module fait</h4>
+<ul>
+  <li>Génère un secret TOTP et le QR code à scanner dans Google Authenticator.</li>
+  <li>Active / désactive le 2FA pour un utilisateur.</li>
+  <li>Vérifie un code à 6 chiffres au moment de la connexion.</li>
+  <li>Fournit des codes de récupération à usage unique (perte du téléphone).</li>
+  <li>Chiffre les secrets en base (AES-256-GCM) et hache les codes de récupération (bcrypt).</li>
+  <li>Applique un rate limiting sur les tentatives de vérification.</li>
+</ul>
+
+<h4>Ce que le module ne fait PAS</h4>
+<ul>
+  <li>Il ne gère pas la connexion (identifiant / mot de passe) ni les sessions : cela reste le rôle du site hôte.</li>
+  <li>Il n'émet aucun jeton : il se contente de <em>vérifier</em> le JWT déjà produit par le site hôte.</li>
+  <li>Il n'a pas d'interface graphique : c'est une API que le backend du site hôte appelle.</li>
+</ul>
+
+<h4>Pile technique</h4>
+<table>
+  <tr><th>Composant</th><th>Détail</th></tr>
+  <tr><td>Exécution</td><td>Node.js ≥ 18, Express 4</td></tr>
+  <tr class="alt"><td>Base de données</td><td>MySQL 5.7+ / 8.x (dédiée ou partagée avec le site hôte)</td></tr>
+  <tr><td>TOTP / QR</td><td>speakeasy, qrcode</td></tr>
+  <tr class="alt"><td>Cryptographie</td><td>AES-256-GCM (secrets), bcrypt (codes de récupération)</td></tr>
+  <tr><td>Protection</td><td>express-rate-limit sur <span class="tag">/verify</span>, <span class="tag">/disable</span>, <span class="tag">/recovery-codes/regenerate</span></td></tr>
+</table>
+
+<h2>2. Principe d'intégration</h2>
+<p>Le module se place <strong>derrière</strong> le backend du site hôte. Il ne parle jamais
+directement au navigateur.</p>
+
+<pre>
+Navigateur
+   |  (identifiant + mot de passe, puis code 2FA)
+   v
+Backend du SITE HÔTE   ── gère login, mot de passe, session, émet le JWT
+   |  Authorization: Bearer &lt;JWT de l'utilisateur&gt;
+   v
+MODULE 2FA (cette API)  ── vérifie le JWT, applique la logique TOTP
+   |
+   v
+MySQL (tables two_factor_*)
+</pre>
+
+<p><strong>Identification de l'utilisateur.</strong> Le module attend sur chaque requête le
+header <span class="tag">Authorization: Bearer &lt;jwt&gt;</span>. Ce JWT est celui que le site hôte
+émet déjà pour ses propres besoins. Le module le vérifie avec le <strong>même secret</strong>
+(<span class="tag">JWT_SECRET</span>) et lit l'identifiant de l'utilisateur dans le premier champ
+disponible du payload : <span class="tag">sub</span>, <span class="tag">userId</span> ou
+<span class="tag">id</span>.</p>
+
+<div class="note">
+<strong>Le module ne signe aucun JWT.</strong> Il ne fait que les vérifier. Il faut donc lui
+communiquer la valeur de <span class="tag">JWT_SECRET</span> utilisée par le site hôte, et rien de plus.
+</div>
+
+<p class="muted">Variante possible (non activée par défaut) : si le module est appelé par une API
+centrale plutôt que directement par le backend applicatif, l'authentification par JWT peut être
+remplacée par une clé d'API de service (header <span class="tag">X-Api-Key</span>) accompagnée de
+l'identifiant utilisateur (header <span class="tag">X-User-Id</span>). Demander cette variante si besoin.</p>
+
+<h2>3. Prérequis</h2>
+<ul>
+  <li><strong>Node.js ≥ 18</strong> et npm sur le serveur qui héberge le module.</li>
+  <li><strong>Une base MySQL</strong> accessible (peut être la base existante du site hôte, ou une base dédiée).</li>
+  <li>Le site hôte <strong>émet déjà des JWT</strong> signés en HS256, avec l'identifiant utilisateur dans <span class="tag">sub</span>, <span class="tag">userId</span> ou <span class="tag">id</span>.</li>
+  <li>Communication <strong>HTTPS</strong> entre le backend hôte et le module (le JWT y circule).</li>
+</ul>
+
+<h2>4. Installation</h2>
+<ol>
+  <li>Copier le dossier du module sur le serveur, par exemple dans <span class="tag">/opt/2fa-google-authenticator</span>.</li>
+  <li>Installer les dépendances :
+    <pre>cd 2fa-google-authenticator
+npm install --production</pre>
+  </li>
+  <li>Créer le fichier de configuration :
+    <pre>cp .env.example .env
+# puis éditer .env (voir section 5)</pre>
+  </li>
+  <li>Créer la base (si dédiée) et jouer la migration SQL :
+    <pre>mysql -u &lt;user&gt; -p -e "CREATE DATABASE IF NOT EXISTS two_factor_auth;"
+mysql -u &lt;user&gt; -p two_factor_auth &lt; database/migrations/001_create_two_factor.sql</pre>
+  </li>
+  <li>Démarrer le module :
+    <pre>npm start          # production
+npm run dev        # développement (rechargement auto)</pre>
+    En production, le lancer via un gestionnaire de processus (pm2, systemd, Docker) avec
+    redémarrage automatique.
+  </li>
+  <li>Vérifier le démarrage — le log doit afficher :
+    <pre>Module 2FA à l'écoute sur le port 4000</pre>
+  </li>
+</ol>
+
+<h2>5. Configuration (fichier <span class="tag">.env</span>)</h2>
+<table>
+  <tr><th>Variable</th><th>Obligatoire</th><th>Défaut</th><th>Description</th></tr>
+  <tr><td class="tag">PORT</td><td>non</td><td>4000</td><td>Port d'écoute du module.</td></tr>
+  <tr class="alt"><td class="tag">DB_HOST</td><td>non</td><td>localhost</td><td>Hôte MySQL.</td></tr>
+  <tr><td class="tag">DB_PORT</td><td>non</td><td>3306</td><td>Port MySQL.</td></tr>
+  <tr class="alt"><td class="tag">DB_USERNAME</td><td>non</td><td>root</td><td>Utilisateur MySQL.</td></tr>
+  <tr><td class="tag">DB_PASSWORD</td><td>non</td><td>(vide)</td><td>Mot de passe MySQL. Si le mot de passe contient un <span class="tag">#</span>, l'encadrer de guillemets dans le <span class="tag">.env</span>.</td></tr>
+  <tr class="alt"><td class="tag">DB_NAME</td><td>non</td><td>two_factor_auth</td><td>Nom de la base.</td></tr>
+  <tr><td class="tag">JWT_SECRET</td><td><strong>OUI</strong></td><td>—</td><td><strong>Identique</strong> au secret JWT du site hôte. Le module refuse de démarrer sans.</td></tr>
+  <tr class="alt"><td class="tag">ENCRYPTION_KEY</td><td><strong>OUI</strong></td><td>—</td><td>Clé AES-256 : 32 octets en hexadécimal (64 caractères). Générer avec <span class="tag">openssl rand -hex 32</span>.</td></tr>
+  <tr><td class="tag">TOTP_ISSUER</td><td>non</td><td>MyApp</td><td>Nom affiché à côté du compte dans l'application d'authentification (mettre le nom de la marque).</td></tr>
+  <tr class="alt"><td class="tag">TOTP_WINDOW</td><td>non</td><td>1</td><td>Tolérance : nombre de pas de 30 s acceptés avant / après l'instant courant.</td></tr>
+  <tr><td class="tag">RECOVERY_CODES_COUNT</td><td>non</td><td>10</td><td>Nombre de codes de récupération générés à l'activation.</td></tr>
+</table>
+
+<div class="warn">
+<strong>ENCRYPTION_KEY est critique.</strong> Elle chiffre tous les secrets TOTP en base.
+La sauvegarder hors du serveur et <strong>ne jamais la modifier</strong> une fois en production :
+un changement rend tous les secrets illisibles et oblige chaque utilisateur à refaire l'activation.
+</div>
+
+<p>Exemple de <span class="tag">.env</span> :</p>
+<pre>PORT=4000
+DB_HOST=localhost
+DB_PORT=3306
+DB_USERNAME=app
+DB_PASSWORD="motdepasse"
+DB_NAME=two_factor_auth
+JWT_SECRET=le-meme-secret-que-le-site-hote
+ENCRYPTION_KEY=3f9c1d...  (64 caractères hexadécimaux)
+TOTP_ISSUER=MonSite
+TOTP_WINDOW=1
+RECOVERY_CODES_COUNT=10</pre>
+
+<h2>6. Base de données</h2>
+<p>La migration <span class="tag">database/migrations/001_create_two_factor.sql</span> crée deux tables.
+Elles peuvent cohabiter avec les tables existantes du site hôte dans la même base.</p>
+
+<table>
+  <tr><th>Table</th><th>Colonnes</th><th>Rôle</th></tr>
+  <tr>
+    <td class="tag">two_factor_secrets</td>
+    <td><span class="tag">id</span>, <span class="tag">user_id</span> (unique), <span class="tag">secret_encrypted</span>, <span class="tag">enabled</span>, <span class="tag">created_at</span>, <span class="tag">updated_at</span></td>
+    <td>Un enregistrement par utilisateur. Le secret TOTP y est stocké chiffré (AES-256-GCM). <span class="tag">enabled</span> passe à vrai après <span class="tag">/enable</span>.</td>
+  </tr>
+  <tr class="alt">
+    <td class="tag">two_factor_recovery_codes</td>
+    <td><span class="tag">id</span>, <span class="tag">user_id</span>, <span class="tag">code_hash</span>, <span class="tag">used_at</span>, <span class="tag">created_at</span></td>
+    <td>Un enregistrement par code de récupération. Le code est haché (bcrypt). <span class="tag">used_at</span> est renseigné à la consommation (usage unique).</td>
+  </tr>
+</table>
+
+<p><span class="tag">user_id</span> est un <span class="tag">VARCHAR(64)</span> : y placer l'identifiant
+utilisateur du site hôte, tel qu'il apparaît dans le JWT.</p>
+
+<div class="pb"></div>
+<h2>7. Référence des endpoints</h2>
+<p>Préfixe commun : <span class="tag">/api/2fa</span>. <strong>Toutes</strong> les requêtes exigent le
+header <span class="tag">Authorization: Bearer &lt;jwt&gt;</span>. Les corps sont en JSON.</p>
+
+<p>Format des réponses : succès <span class="tag">{ "success": true, ... }</span> ·
+erreur <span class="tag">{ "success": false, "message": "..." }</span>.</p>
+
+<h3>GET /api/2fa/status</h3>
+<p>Indique si le 2FA est actif pour l'utilisateur. Aucun corps.</p>
+<pre>200  { "success": true, "enabled": false }</pre>
+
+<h3>POST /api/2fa/setup</h3>
+<p>Génère (ou régénère) un secret TOTP et le QR code. Le 2FA n'est pas encore actif après cet appel.</p>
+<pre>Corps   { "accountName": "utilisateur@example.com" }   // optionnel, sinon = user_id
+200     { "success": true,
+          "secret": "LMWGKNKYJQRUCSJGEQYGKNCNF5FFORKH",
+          "qrCodeDataUrl": "data:image/png;base64,iVBORw0KGgo..." }</pre>
+<p><span class="tag">qrCodeDataUrl</span> est une image PNG encodée : l'injecter telle quelle dans
+<span class="tag">&lt;img src="..."&gt;</span>. <span class="tag">secret</span> peut être affiché pour une
+saisie manuelle dans l'application d'authentification.</p>
+
+<h3>POST /api/2fa/enable</h3>
+<p>Active le 2FA après vérification d'un premier code. Renvoie les codes de récupération.</p>
+<pre>Corps   { "token": "123456" }
+200     { "success": true,
+          "recoveryCodes": ["E63E-EBAC", "C372-C18C", ... 10 codes] }
+401     { "success": false, "message": "Code invalide." }
+404     { "success": false, "message": "Aucune configuration 2FA en attente pour cet utilisateur." }
+409     { "success": false, "message": "Le 2FA est déjà activé." }</pre>
+<div class="note">Les <span class="tag">recoveryCodes</span> ne sont renvoyés qu'ici (et à la
+régénération). Ils ne sont jamais réaffichables ensuite. À présenter une seule fois à l'utilisateur.</div>
+
+<h3>POST /api/2fa/verify</h3>
+<p>Vérifie un code au moment de la connexion. Accepte un code TOTP à 6 chiffres <strong>ou</strong>
+un code de récupération au format <span class="tag">XXXX-XXXX</span>. <em>Rate limité.</em></p>
+<pre>Corps   { "token": "123456" }              // ou "E63E-EBAC"
+200     { "success": true, "method": "totp" }
+200     { "success": true, "method": "recovery_code" }
+401     { "success": false, "message": "Code invalide." }
+404     { "success": false, "message": "Le 2FA n'est pas activé pour cet utilisateur." }</pre>
+
+<h3>POST /api/2fa/disable</h3>
+<p>Désactive le 2FA et supprime la configuration. Exige un code valide (TOTP ou récupération).
+<em>Rate limité.</em></p>
+<pre>Corps   { "token": "123456" }
+200     { "success": true }
+401     { "success": false, "message": "Code invalide." }</pre>
+
+<h3>POST /api/2fa/recovery-codes/regenerate</h3>
+<p>Invalide les anciens codes de récupération et en génère de nouveaux. Exige un code valide.
+<em>Rate limité.</em></p>
+<pre>Corps   { "token": "123456" }
+200     { "success": true, "recoveryCodes": [ ... 10 nouveaux codes ] }</pre>
+
+<h3>Rate limiting</h3>
+<p><span class="tag">/verify</span>, <span class="tag">/disable</span> et
+<span class="tag">/recovery-codes/regenerate</span> sont limités à <strong>5 requêtes par
+15 minutes et par utilisateur</strong>. Au-delà :</p>
+<pre>429  { "success": false, "message": "Trop de tentatives, réessayez plus tard." }</pre>
+
+<div class="pb"></div>
+<h2>8. Parcours d'intégration côté site hôte</h2>
+<p>Tous les appels ci-dessous sont faits par le <strong>backend</strong> du site hôte, en
+transmettant le JWT de l'utilisateur courant.</p>
+
+<h3>8.1 Activation du 2FA (utilisateur déjà connecté)</h3>
+<ol>
+  <li>Backend hôte → <span class="tag">POST /api/2fa/setup</span>. Récupère <span class="tag">qrCodeDataUrl</span> (et <span class="tag">secret</span>).</li>
+  <li>Le site affiche le QR code : <span class="tag">&lt;img src="{qrCodeDataUrl}"&gt;</span>, plus le <span class="tag">secret</span> en clair pour la saisie manuelle.</li>
+  <li>L'utilisateur scanne dans Google Authenticator, lit le code à 6 chiffres et le saisit sur le site.</li>
+  <li>Backend hôte → <span class="tag">POST /api/2fa/enable</span> avec <span class="tag">{ token }</span>. Récupère <span class="tag">recoveryCodes</span>.</li>
+  <li>Le site affiche les codes de récupération <strong>une seule fois</strong> et invite à les sauvegarder.</li>
+</ol>
+<pre>// Exemple Node.js (backend du site hôte)
+const BASE = 'https://2fa.interne.monsite';
+
+async function startSetup(userJwt) {
+  const r = await fetch(`${BASE}/api/2fa/setup`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${userJwt}`,
+               'Content-Type': 'application/json' },
+    body: JSON.stringify({ accountName: 'utilisateur@example.com' }),
+  });
+  return r.json();  // { secret, qrCodeDataUrl }
+}
+
+async function confirmSetup(userJwt, code) {
+  const r = await fetch(`${BASE}/api/2fa/enable`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${userJwt}`,
+               'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: code }),
+  });
+  if (!r.ok) throw new Error('Code invalide');
+  return r.json();  // { recoveryCodes: [...] }
+}</pre>
+
+<h3>8.2 Connexion avec 2FA</h3>
+<ol>
+  <li>L'utilisateur saisit identifiant + mot de passe. Le site hôte les vérifie comme d'habitude.</li>
+  <li>Avant d'ouvrir la session : backend hôte → <span class="tag">GET /api/2fa/status</span>.
+    <ul>
+      <li><span class="tag">enabled: false</span> → connexion normale, rien de plus.</li>
+      <li><span class="tag">enabled: true</span> → demander le code à 6 chiffres à l'utilisateur.</li>
+    </ul>
+  </li>
+  <li>Backend hôte → <span class="tag">POST /api/2fa/verify</span> avec <span class="tag">{ token }</span>
+      (code TOTP ou code de récupération <span class="tag">XXXX-XXXX</span>).
+    <ul>
+      <li><span class="tag">200</span> → ouvrir la session.</li>
+      <li><span class="tag">401</span> → refuser, redemander le code.</li>
+    </ul>
+  </li>
+</ol>
+<pre>// Exemple Node.js — après validation du mot de passe
+async function loginSecondFactor(userJwt, code) {
+  const status = await fetch(`${BASE}/api/2fa/status`, {
+    headers: { 'Authorization': `Bearer ${userJwt}` },
+  }).then(r =&gt; r.json());
+
+  if (!status.enabled) return { ok: true };          // pas de 2FA
+
+  const r = await fetch(`${BASE}/api/2fa/verify`, {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${userJwt}`,
+               'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: code }),
+  });
+  return { ok: r.ok };                               // true =&gt; ouvrir la session
+}</pre>
+
+<h3>8.3 Désactivation</h3>
+<p>Backend hôte → <span class="tag">POST /api/2fa/disable</span> avec <span class="tag">{ token }</span>
+(un code valide est exigé pour éviter une désactivation non consentie).</p>
+
+<h3>8.4 Régénération des codes de récupération</h3>
+<p>Backend hôte → <span class="tag">POST /api/2fa/recovery-codes/regenerate</span> avec
+<span class="tag">{ token }</span>. Les anciens codes cessent immédiatement de fonctionner.
+Afficher les nouveaux une seule fois.</p>
+
+<div class="pb"></div>
+<h2>9. Sécurité — points impératifs</h2>
+<ul>
+  <li><strong>HTTPS</strong> entre le backend hôte et le module : le JWT et les codes y transitent.</li>
+  <li><strong>Ne pas exposer le module sur Internet.</strong> Le placer sur le réseau interne, joignable uniquement par le backend du site hôte (firewall / groupe de sécurité / réseau privé).</li>
+  <li><strong>ENCRYPTION_KEY</strong> : secrète, sauvegardée hors serveur, jamais modifiée après mise en production (voir section 5).</li>
+  <li><strong>JWT_SECRET</strong> : strictement identique à celui du site hôte, stocké de façon sécurisée (variable d'environnement, coffre à secrets).</li>
+  <li><strong>Codes de récupération</strong> : hachés en base, non réaffichables. Présentés une seule fois, au moment de la génération.</li>
+  <li><strong>Rate limiting</strong> : déjà actif sur les vérifications (5 / 15 min / utilisateur). Ne pas le contourner côté hôte.</li>
+  <li><strong>Sauvegarde</strong> régulière des tables <span class="tag">two_factor_secrets</span> et <span class="tag">two_factor_recovery_codes</span>.</li>
+  <li><strong>Horloge serveur</strong> synchronisée (NTP) : le TOTP repose sur l'heure.</li>
+</ul>
+
+<h2>10. Codes d'erreur</h2>
+<table>
+  <tr><th>HTTP</th><th>Message</th><th>Cause probable</th></tr>
+  <tr><td>401</td><td>Authentification requise.</td><td>Header <span class="tag">Authorization</span> absent ou mal formé.</td></tr>
+  <tr class="alt"><td>401</td><td>Token invalide ou expiré.</td><td>JWT invalide — le plus souvent <span class="tag">JWT_SECRET</span> différent de celui du site hôte, ou JWT expiré.</td></tr>
+  <tr><td>401</td><td>Le token ne contient pas d'identifiant utilisateur.</td><td>Payload JWT sans <span class="tag">sub</span> / <span class="tag">userId</span> / <span class="tag">id</span>.</td></tr>
+  <tr class="alt"><td>401</td><td>Code invalide.</td><td>Code TOTP faux/expiré, ou code de récupération inconnu / déjà utilisé.</td></tr>
+  <tr><td>400</td><td>Le champ token est requis.</td><td>Corps JSON sans <span class="tag">token</span>.</td></tr>
+  <tr class="alt"><td>404</td><td>Aucune configuration 2FA en attente...</td><td><span class="tag">/enable</span> appelé sans <span class="tag">/setup</span> préalable.</td></tr>
+  <tr><td>404</td><td>Le 2FA n'est pas activé pour cet utilisateur.</td><td><span class="tag">/verify</span> ou <span class="tag">/disable</span> alors que le 2FA n'est pas actif.</td></tr>
+  <tr class="alt"><td>409</td><td>Le 2FA est déjà activé.</td><td><span class="tag">/enable</span> alors qu'il l'est déjà.</td></tr>
+  <tr><td>429</td><td>Trop de tentatives, réessayez plus tard.</td><td>Rate limit atteint (5 / 15 min / utilisateur).</td></tr>
+  <tr class="alt"><td>500</td><td>Erreur interne du serveur.</td><td>Base injoignable, identifiants <span class="tag">DB_*</span> incorrects, ou <span class="tag">ENCRYPTION_KEY</span> mal formée.</td></tr>
+  <tr><td>404</td><td>Route introuvable.</td><td>URL hors du préfixe <span class="tag">/api/2fa</span>.</td></tr>
+</table>
+
+<h2>11. Tests et outils fournis</h2>
+<ul>
+  <li><strong>Tests unitaires</strong> : <span class="tag">npm test</span> (13 tests, sans base de données requise).</li>
+  <li><strong>Collection Postman — parcours pas à pas</strong> :
+      <span class="tag">2fa-sequence-activation-verification.postman_collection.json</span>.
+      6 requêtes numérotées (statut → setup → enable → statut → verify → verify par code de récupération).
+      Le code à 6 chiffres est saisi à la main, comme un vrai utilisateur.</li>
+  <li><strong>Collection Postman — suite automatisée</strong> :
+      <span class="tag">2fa-google-authenticator.postman_collection.json</span>.
+      Le JWT et le code TOTP sont calculés par les scripts de la collection ; exécutable en ligne de
+      commande avec <span class="tag">newman run &lt;fichier&gt;</span>.</li>
+</ul>
+<p class="muted">Note sur la collection automatisée : <span class="tag">/verify</span>, <span class="tag">/disable</span>
+et <span class="tag">/regenerate</span> étant limités à 5 appels / 15 min / utilisateur, un run complet
+consomme le quota. Pour rejouer dans la foulée, changer la variable <span class="tag">userId</span> de la collection.</p>
+
+<h2>12. Checklist de mise en production</h2>
+<ul>
+  <li>[ ] Node.js ≥ 18 installé sur le serveur cible.</li>
+  <li>[ ] Base MySQL créée et migration <span class="tag">001_create_two_factor.sql</span> jouée.</li>
+  <li>[ ] <span class="tag">.env</span> renseigné.</li>
+  <li>[ ] <span class="tag">JWT_SECRET</span> identique à celui du site hôte (vérifié).</li>
+  <li>[ ] <span class="tag">ENCRYPTION_KEY</span> générée (<span class="tag">openssl rand -hex 32</span>) et sauvegardée hors serveur.</li>
+  <li>[ ] <span class="tag">TOTP_ISSUER</span> = nom de la marque (visible dans l'application d'authentification).</li>
+  <li>[ ] Module lancé via pm2 / systemd / Docker avec redémarrage automatique.</li>
+  <li>[ ] Module joignable uniquement depuis le backend du site hôte (réseau interne / firewall).</li>
+  <li>[ ] HTTPS en place (reverse proxy si nécessaire).</li>
+  <li>[ ] Sauvegarde planifiée des tables <span class="tag">two_factor_*</span>.</li>
+  <li>[ ] Horloge serveur synchronisée (NTP).</li>
+  <li>[ ] Parcours activation puis connexion validés en recette.</li>
+</ul>
+
+<h2>13. Dépannage rapide</h2>
+<table>
+  <tr><th>Symptôme</th><th>Piste</th></tr>
+  <tr>
+    <td>401 sur tous les appels, JWT pourtant valide côté site hôte</td>
+    <td><span class="tag">JWT_SECRET</span> du module différent de celui du site hôte ; ou JWT expiré ; ou identifiant utilisateur absent du payload (<span class="tag">sub</span> / <span class="tag">userId</span> / <span class="tag">id</span>).</td>
+  </tr>
+  <tr class="alt">
+    <td>500 systématique</td>
+    <td>Voir les logs : <span class="tag">Access denied</span> ou <span class="tag">ECONNREFUSED</span> → <span class="tag">DB_*</span> incorrects ; message sur <span class="tag">ENCRYPTION_KEY</span> → elle doit faire 64 caractères hexadécimaux.</td>
+  </tr>
+  <tr>
+    <td>Le mot de passe MySQL contient <span class="tag">#</span> et la connexion échoue</td>
+    <td>Encadrer la valeur de guillemets dans le <span class="tag">.env</span> : <span class="tag">DB_PASSWORD="mot#depasse"</span>.</td>
+  </tr>
+  <tr class="alt">
+    <td>Le QR code ne s'affiche pas</td>
+    <td><span class="tag">qrCodeDataUrl</span> est déjà une image complète (<span class="tag">data:image/png;base64,...</span>) : la mettre telle quelle dans <span class="tag">src</span> d'une balise <span class="tag">&lt;img&gt;</span>, sans la retraiter.</td>
+  </tr>
+  <tr>
+    <td>« Code invalide » alors que le code affiché semble correct</td>
+    <td>Horloge du serveur désynchronisée : activer NTP. En dépannage, augmenter <span class="tag">TOTP_WINDOW</span> à 2.</td>
+  </tr>
+  <tr class="alt">
+    <td>429 « Trop de tentatives »</td>
+    <td>Rate limit atteint : attendre 15 minutes, ou réduire le nombre de tentatives côté site hôte.</td>
+  </tr>
+  <tr>
+    <td>Après <span class="tag">/enable</span>, l'utilisateur n'a pas noté ses codes de récupération</td>
+    <td>Appeler <span class="tag">/recovery-codes/regenerate</span> (code valide requis) et réafficher les nouveaux codes une seule fois.</td>
+  </tr>
+</table>
+
+<p class="muted">Fin du document — Module 2FA v1.0.0 — 31 août 2026.</p>
+
+</body>
+</html>

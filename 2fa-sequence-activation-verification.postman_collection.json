@@ -1,0 +1,265 @@
+{
+  "info": {
+    "_postman_id": "c1a2b3c4-0001-4a2b-9c3d-activation0001",
+    "name": "2FA — Séquence activation → vérification",
+    "description": "Parcours linéaire du module 2FA, étape par étape. Lance les requêtes DANS L'ORDRE (1 à 6).\n\n———————————————————————————————\nAVANT DE COMMENCER — régler 2 variables de la collection\n(onglet « Variables » de la collection)\n———————————————————————————————\n\n1) jwt  : un JWT valide de l'application hôte identifiant l'utilisateur.\n   Pour en générer un de test (le secret doit être IDENTIQUE à JWT_SECRET du .env) :\n\n     node -e \"console.log(require('jsonwebtoken').sign({sub:'user-123'},'METS_ICI_TON_JWT_SECRET',{expiresIn:'1h'}))\"\n\n   Colle le résultat dans la variable `jwt`.\n\n2) baseUrl : URL du module (par défaut http://localhost:4000).\n\nLes variables `secret` et `recoveryCode` se remplissent TOUTES SEULES\n(l'onglet « Tests » de chaque requête fait juste : « copie ce champ de la réponse dans une variable »).\n\nLa variable `code` est la SEULE chose que tu tapes à la main :\nc'est le code à 6 chiffres affiché par Google Authenticator, à mettre à jour\njuste avant l'étape 3 puis avant l'étape 5.\n\n———————————————————————————————\nLA SÉQUENCE\n———————————————————————————————\n1. GET  /status  → 2FA encore inactif        (état de départ)\n2. POST /setup   → crée le secret + le QR    (à scanner dans Google Authenticator)\n3. POST /enable  → active le 2FA             (envoie le code à 6 chiffres, reçoit les codes de secours)\n4. GET  /status  → 2FA maintenant actif      (confirmation)\n5. POST /verify  → vérifie un code           (l'appel fait à CHAQUE login)\n6. POST /verify  → login avec un code de secours (optionnel, si téléphone perdu)",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [{ "key": "token", "value": "{{jwt}}", "type": "string" }]
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:4000", "type": "string" },
+    { "key": "jwt", "value": "", "type": "string" },
+    { "key": "code", "value": "", "type": "string" },
+    { "key": "secret", "value": "", "type": "string" },
+    { "key": "recoveryCode", "value": "", "type": "string" }
+  ],
+  "item": [
+    {
+      "name": "1. GET /status — 2FA encore inactif",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/2fa/status",
+        "description": "Point de départ. L'utilisateur n'a pas encore configuré la double authentification.\n\nRÉPONSE ATTENDUE : { \"success\": true, \"enabled\": false }"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+              "pm.test('2FA inactif', () => pm.expect(pm.response.json().enabled).to.eql(false));"
+            ]
+          }
+        }
+      ],
+      "response": [
+        {
+          "name": "Exemple",
+          "originalRequest": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/2fa/status" },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+          "body": "{\n  \"success\": true,\n  \"enabled\": false\n}"
+        }
+      ]
+    },
+    {
+      "name": "2. POST /setup — créer le secret + le QR code",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/2fa/setup",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"accountName\": \"user-123@example.com\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "description": "Génère la clé TOTP de l'utilisateur.\n\nRÉPONSE :\n- secret        : la clé (≈32 caractères)\n- qrCodeDataUrl : image PNG du QR code (data:image/png;base64,...)\n\nÀ FAIRE APRÈS CETTE REQUÊTE :\n→ Ouvre Google Authenticator → « Ajouter un compte » → scanne qrCodeDataUrl\n  (ou choisis « saisir une clé » et tape la valeur `secret`).\n\nL'onglet Tests copie `secret` dans les variables de la collection pour l'étape 3."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+              "pm.test('secret présent', () => pm.expect(body.secret).to.be.a('string').and.not.empty);",
+              "pm.test('QR code présent', () => pm.expect(body.qrCodeDataUrl).to.include('data:image'));",
+              "",
+              "// On garde le secret pour les étapes suivantes",
+              "pm.collectionVariables.set('secret', body.secret);",
+              "console.log('secret enregistré :', body.secret);"
+            ]
+          }
+        }
+      ],
+      "response": [
+        {
+          "name": "Exemple",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/2fa/setup",
+            "body": { "mode": "raw", "raw": "{\n  \"accountName\": \"user-123@example.com\"\n}" }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+          "body": "{\n  \"success\": true,\n  \"secret\": \"LMWGKNKYJQRUCSJGEQYGKNCNF5FFORKH\",\n  \"qrCodeDataUrl\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "3. POST /enable — activer le 2FA",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/2fa/enable",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{code}}\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "description": "Active définitivement la double authentification.\n\n⚠️ AVANT DE LANCER :\n→ Regarde le code à 6 chiffres dans Google Authenticator (compte ajouté à l'étape 2)\n→ Mets ce code dans la variable de collection `code`\n\nCORPS ENVOYÉ : { \"token\": \"<code à 6 chiffres>\" }\n\nRÉPONSE : recoveryCodes = 10 codes de secours (format XXXX-XXXX), à usage unique.\nÀ montrer UNE SEULE FOIS à l'utilisateur, qui doit les sauvegarder.\nLe 1er code est copié dans `recoveryCode` (utilisé à l'étape 6).\n\nERREURS POSSIBLES :\n- 401 { message: \"Code invalide.\" }  → le code est faux ou expiré : reprends un code frais et relance.\n- 409 { message: \"Le 2FA est déjà activé.\" } → déjà fait."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const body = pm.response.json();",
+              "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+              "pm.test('10 codes de secours', () => pm.expect(body.recoveryCodes).to.have.lengthOf(10));",
+              "",
+              "if (Array.isArray(body.recoveryCodes)) {",
+              "  pm.collectionVariables.set('recoveryCode', body.recoveryCodes[0]);",
+              "  console.log('codes de secours :', body.recoveryCodes.join(' '));",
+              "}"
+            ]
+          }
+        }
+      ],
+      "response": [
+        {
+          "name": "Exemple",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/2fa/enable",
+            "body": { "mode": "raw", "raw": "{\n  \"token\": \"123456\"\n}" }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+          "body": "{\n  \"success\": true,\n  \"recoveryCodes\": [\n    \"E63E-EBAC\", \"C372-C18C\", \"7C4E-E5C8\", \"E39C-E6EE\", \"7636-581A\",\n    \"0A9C-1AC5\", \"4A80-4A17\", \"AF7E-5680\", \"2820-0794\", \"EC27-B3C9\"\n  ]\n}"
+        }
+      ]
+    },
+    {
+      "name": "4. GET /status — 2FA maintenant actif",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": "{{baseUrl}}/api/2fa/status",
+        "description": "Confirmation que l'activation a bien été prise en compte.\n\nRÉPONSE ATTENDUE : { \"success\": true, \"enabled\": true }"
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+              "pm.test('2FA actif', () => pm.expect(pm.response.json().enabled).to.eql(true));"
+            ]
+          }
+        }
+      ],
+      "response": [
+        {
+          "name": "Exemple",
+          "originalRequest": { "method": "GET", "header": [], "url": "{{baseUrl}}/api/2fa/status" },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+          "body": "{\n  \"success\": true,\n  \"enabled\": true\n}"
+        }
+      ]
+    },
+    {
+      "name": "5. POST /verify — vérifier un code (login)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/2fa/verify",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{code}}\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "description": "C'est l'appel que fait l'application hôte À CHAQUE CONNEXION, après le mot de passe :\nl'utilisateur saisit le code de Google Authenticator, l'app le transmet ici.\n\n⚠️ AVANT DE LANCER :\n→ Prends un NOUVEAU code à 6 chiffres dans Google Authenticator\n  (celui de l'étape 3 a sans doute expiré — un code ne dure que 30 s)\n→ Mets-le dans la variable `code`\n\nCORPS ENVOYÉ : { \"token\": \"<code à 6 chiffres>\" }\n\nRÉPONSE :\n- 200 { method: \"totp\" }        → code correct, connexion autorisée\n- 401 { message: \"Code invalide.\" } → code faux/expiré, connexion refusée\n\nNOTE : /verify est limité à 5 tentatives par 15 min et par utilisateur."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+              "pm.test('méthode = totp', () => pm.expect(pm.response.json().method).to.eql('totp'));"
+            ]
+          }
+        }
+      ],
+      "response": [
+        {
+          "name": "Exemple",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/2fa/verify",
+            "body": { "mode": "raw", "raw": "{\n  \"token\": \"654321\"\n}" }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+          "body": "{\n  \"success\": true,\n  \"method\": \"totp\"\n}"
+        }
+      ]
+    },
+    {
+      "name": "6. POST /verify — login avec un code de secours (optionnel)",
+      "request": {
+        "method": "POST",
+        "header": [{ "key": "Content-Type", "value": "application/json" }],
+        "url": "{{baseUrl}}/api/2fa/verify",
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"token\": \"{{recoveryCode}}\"\n}",
+          "options": { "raw": { "language": "json" } }
+        },
+        "description": "Même endpoint que l'étape 5, mais on envoie un CODE DE SECOURS au lieu du code TOTP.\nCas d'usage : l'utilisateur a perdu son téléphone.\n\nOn réutilise `recoveryCode` (le 1er code reçu à l'étape 3), rempli automatiquement.\n\nRÉPONSE :\n- 200 { method: \"recovery_code\" } → accepté\n\nUSAGE UNIQUE : relance cette requête une 2e fois → 401 { message: \"Code invalide.\" }\n(le code de secours est consommé et ne marche plus)."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Statut 200', () => pm.response.to.have.status(200));",
+              "pm.test('méthode = recovery_code', () => pm.expect(pm.response.json().method).to.eql('recovery_code'));"
+            ]
+          }
+        }
+      ],
+      "response": [
+        {
+          "name": "Exemple",
+          "originalRequest": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "url": "{{baseUrl}}/api/2fa/verify",
+            "body": { "mode": "raw", "raw": "{\n  \"token\": \"E63E-EBAC\"\n}" }
+          },
+          "status": "OK",
+          "code": 200,
+          "_postman_previewlanguage": "json",
+          "header": [{ "key": "Content-Type", "value": "application/json; charset=utf-8" }],
+          "body": "{\n  \"success\": true,\n  \"method\": \"recovery_code\"\n}"
+        }
+      ]
+    }
+  ]
+}
